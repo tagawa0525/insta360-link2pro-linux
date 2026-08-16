@@ -655,6 +655,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # ioctl 番号と構造体レイアウト (XU_QUERY_FMT のポインタ幅、v4l2_format の
+    # 208 バイト等) は 64-bit ABI 前提でハードコードしている。32-bit では
+    # 別の値になり誤動作するため、実行前に明示的に弾く
+    if struct.calcsize("P") != 8:
+        raise SystemExit(
+            "このスクリプトは 64-bit Python 専用です"
+            "（ioctl 構造体レイアウトを 64-bit ABI 前提で組み立てています）。"
+        )
     args = build_parser().parse_args(argv)
     path = args.device or find_device()
     try:
