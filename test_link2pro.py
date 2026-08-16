@@ -208,9 +208,10 @@ def test_deskview_does_not_wait_beyond_the_mode_id(sleeps: list[float]) -> None:
     """
     g = gimbal([(0x00, 0x10), (0xFF, 0x10), (0x06, 0x10)])
 
-    assert g._enter(*link2pro.MODES["deskview"], 0.5, "deskview") == (0x06, 0x10)
+    assert g._enter(*link2pro.MODES["deskview"], 15.0, "deskview") == (0x06, 0x10)
     assert g.xu.writes == [{0: 0x06, 1: 0x00}]
-    assert sleeps == []
+    # 3 回目の読みで返る。0x11 を待つとタイムアウトまで 15 回待つことになる
+    assert len(sleeps) == 2
 
 
 def test_mode_timeout_mentions_stream() -> None:

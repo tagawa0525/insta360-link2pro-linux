@@ -72,7 +72,10 @@ MODES: dict[str, tuple[int, int, int | None]] = {
     "tracking": (0x01, 0x00, None),
     "overhead": (0x05, 0x03, None),
     "whiteboard": (0x04, 0x00, 0x02),
-    "deskview": (0x06, 0x00, 0x11),
+    # DeskView の byte[1] は 0x10 の約 0.2 秒後に 0x11 になるが、0x10 のまま
+    # 変わらないこともある（実機で 12 秒観測）。byte[0] が入れ替わった時点で
+    # 有効なので、来ないかもしれない値は待たない
+    "deskview": (0x06, 0x00, None),
 }
 MODE_BY_ID = {v[0]: k for k, v in MODES.items()}
 # ジンバルが自律的に動くモード。この間とその直後は制御値が実位置を反映しない
@@ -225,10 +228,7 @@ class Gimbal:
                     "--corners で四隅を指定してください。"
                 )
             if state[0] == mode_id:
-                if settled_flag is None or state[1] == settled_flag or not last_write:
-                    # 完了フラグは入った直後だけ返る値で、しばらくすると別の値に
-                    # 落ち着く（deskview は 0x11 → 0x10）。自分で遷移させたので
-                    # なければ、来ない値を待たずにそのまま返す
+                if settled_flag is None or state[1] == settled_flag:
                     return state
                 # モードには入った。以降はカメラ側の検出を待つだけ。
                 # ここで入り口の値を書き直すと検出がやり直しになる
