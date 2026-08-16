@@ -37,7 +37,7 @@ PTZ 制御本体は Python 標準ライブラリのみで動作する。カメ�
 ./link2pro.py desk                       # 机上を書画カメラとして写す
 ./link2pro.py desk --tilt -60            # 机へ向ける角度を変える
 ./link2pro.py mode deskview              # 画を 180 度回す（向きは変えない）
-./link2pro.py mode overhead              # 書画カメラ（真下）
+./link2pro.py mode overhead              # 真下を向く（画は上下逆のまま）
 ./link2pro.py mode normal                # 解除
 ```
 

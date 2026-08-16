@@ -143,14 +143,14 @@ def test_desk_tilt_can_be_overridden() -> None:
     """既定角は設置環境（カメラ高さ・机までの距離）依存なので上書きできる。"""
     g = run_desk(["desk", "--tilt", "-60", "-t", "0"])
 
-    assert g.calls[-1] == ("set_pan_tilt", 0.0, -60.0)
+    assert g.calls == [("mode", "deskview"), ("set_pan_tilt", 0.0, -60.0)]
 
 
 def test_desk_glides_by_default() -> None:
     """既定では移動に時間をかける（急な駆動を避ける）。"""
     g = run_desk(["desk"])
 
-    assert g.calls[-1] == ("glide", 0.0, link2pro.DESK_TILT, 1.0)
+    assert g.calls == [("mode", "deskview"), ("glide", 0.0, link2pro.DESK_TILT, 1.0)]
 
 
 def test_desk_releases_tracking_and_resyncs() -> None:
