@@ -58,6 +58,10 @@ XU_RESET = (11, 5)  # ジンバルリセット（1 バイト、SET 専用）
 DEVICE_NAME = "Insta360 Link 2 Pro"
 UNITS_PER_DEGREE = 3600
 
+# desk サブコマンドが机へ向けるチルト角。モニタ上端に載せた実機で、映像を
+# 見ながら 1 度ずつ追い込んだ値。設置環境で変わるため --tilt で上書きできる
+DESK_TILT = -53.0
+
 # モード名 -> (モード ID, 書き込む byte[1], 完了とみなす byte[1])
 #
 # byte[1] に 0x00 を書いて入り口の状態にすると、カメラが自分で次の状態へ進む。
@@ -500,6 +504,22 @@ def cmd_center(g: Gimbal, args: argparse.Namespace) -> None:
     _report(g)
 
 
+def cmd_desk(g: Gimbal, args: argparse.Namespace) -> None:
+    """机上を書画カメラとして写す。
+
+    DeskView は画を 180 度回すだけでカメラは正面を向いたままなので、単体では
+    机が写らない。逆に真下を向けるだけでは画が上下逆になる。「下を向ける」の
+    がチルト、「上下を戻す」のが DeskView という分担のため、両方が要る。
+
+    モードに入るときにジンバルが動くので、チルトは入ったあとに指定する。
+    """
+    state = g.set_mode("deskview")
+    print(f"mode: {g.mode} (byte[0]=0x{state[0]:02x} byte[1]=0x{state[1]:02x})")
+    args.pan = None
+    args.zoom = None
+    cmd_moveto(g, args)
+
+
 def cmd_zoom(g: Gimbal, args: argparse.Namespace) -> None:
     g.set_zoom(args.factor)
     _report(g)
@@ -645,6 +665,18 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("center", help="原点（正面・等倍）へ戻す")
     add_duration(p, 1.0)
     p.set_defaults(func=cmd_center, needs_wake=True)
+
+    p = sub.add_parser("desk", help="机上を書画カメラとして写す（DeskView + チルト）")
+    p.add_argument(
+        "-l",
+        "--tilt",
+        type=float,
+        default=DESK_TILT,
+        help=f"机へ向けるチルト角（度、既定 {DESK_TILT:+.0f}）。"
+        "最適値はカメラの高さと机までの距離で変わる",
+    )
+    add_duration(p, 1.0)
+    p.set_defaults(func=cmd_desk, needs_wake=True)
 
     p = sub.add_parser("zoom", help="ズーム倍率を設定")
     p.add_argument("factor", type=float, help="倍率（1.0 〜 4.0）")
