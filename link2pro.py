@@ -62,7 +62,8 @@ UNITS_PER_DEGREE = 3600
 # 見ながら 1 度ずつ追い込んだ値。設置環境で変わるため --tilt で上書きできる
 DESK_TILT = -53.0
 
-# 追跡へ入る前に正面・水平へ戻すのにかける秒数。同じだけ駆動の完了も待つ
+# 追跡へ入る前に正面・水平へ戻すのにかける秒数。glide がこの秒数だけ待ちながら
+# 細かく目標を送るため、駆動の完了待ちを兼ねる
 FACE_FRONT_SECONDS = 1.5
 
 # モード名 -> (モード ID, 書き込む byte[1], 完了とみなす byte[1])
@@ -513,11 +514,13 @@ def cmd_center(g: Gimbal, args: argparse.Namespace) -> None:
 
 
 def _release_mode(g: Gimbal) -> str | None:
-    """有効なモードを解除し、必要なら制御値を実位置へ合わせ直す。
+    """自律的に動くモード（AUTONOMOUS_MODES）だけを解除し、制御値を合わせ直す。
 
-    自律的に動くモードのあとは制御値が実位置とずれており、目的の角度を
-    書いても「現在値と同じ」と見なされて駆動しないことがある。解除した
-    モード名を返す（もともと通常モードなら None）。
+    それ以外のモードでは何もしない。自律動作のあとは制御値が実位置とずれて
+    おり、目的の角度を書いても「現在値と同じ」と見なされて駆動しないことが
+    あるため、解除に続けて resync する。解除したモード名を返す（対象外なら
+    None。呼び出し側で通常モードへ戻す必要があるかは、この戻り値では判断
+    できないので g.mode を見ること）。
     """
     current = g.mode
     if current not in AUTONOMOUS_MODES:
@@ -545,7 +548,6 @@ def _face_front(g: Gimbal) -> None:
     if (g.pan, g.tilt) == (0.0, 0.0):
         return  # resync 済み、または既に正面
     g.glide(0.0, 0.0, FACE_FRONT_SECONDS)
-    time.sleep(FACE_FRONT_SECONDS)
 
 
 def cmd_desk(g: Gimbal, args: argparse.Namespace) -> None:

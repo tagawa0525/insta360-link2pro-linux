@@ -138,14 +138,15 @@ def run_cli(argv: list[str], mode: str = "normal", **attrs: object) -> FakeGimba
     return g
 
 
-def test_tracking_faces_front_first(sleeps: list[float]) -> None:
+def test_tracking_faces_front_first() -> None:
     """追跡は人物が画角に入っていないと起動しない（実機で確認）。
 
     机へ向けた状態（tilt -53）では 15 秒待っても入れず、正面・水平へ戻すと
     1 秒で入る。追跡はどのみちカメラを自分で向けるので、先に正面へ戻す。
 
     指令を出すだけでは足りない。ジンバルが物理的に向き終わる前に追跡へ
-    入ろうとすると、やはり画角に人物が入っておらず失敗する。
+    入ろうとすると、やはり画角に人物が入っておらず失敗する。glide は
+    duration 分だけ待ちながら目標を送るため、これが待ちを兼ねる。
     """
     g = run_cli(["mode", "tracking"], mode="normal", pan=40.0, tilt=-53.0)
 
@@ -153,7 +154,6 @@ def test_tracking_faces_front_first(sleeps: list[float]) -> None:
         ("glide", 0.0, 0.0, link2pro.FACE_FRONT_SECONDS),
         ("mode", "tracking"),
     ]
-    assert sleeps  # 駆動が終わるまで待つ
 
 
 def test_tracking_leaves_any_mode_first() -> None:
