@@ -30,9 +30,11 @@ class FakeXu:
 
 
 @pytest.fixture(autouse=True)
-def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ポーリング間隔で待たない。"""
-    monkeypatch.setattr(link2pro.time, "sleep", lambda _: None)
+def sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """ポーリング間隔で待たず、待った回数を記録する。"""
+    calls: list[float] = []
+    monkeypatch.setattr(link2pro.time, "sleep", calls.append)
+    return calls
 
 
 def gimbal(states: list[tuple[int, int]]) -> link2pro.Gimbal:
@@ -191,6 +193,21 @@ def test_desk_does_not_resync_without_autonomous_motion(mode: str) -> None:
 
     assert ("resync",) not in g.calls
     assert ("mode", "normal") not in g.calls
+
+
+def test_already_active_mode_does_not_wait_for_the_settled_flag(
+    sleeps: list[float],
+) -> None:
+    """完了フラグは入った直後だけの値で、定常状態は別の値に落ち着く。
+
+    deskview は入った直後に byte[1]=0x11 を返すが、しばらくすると 0x10 になる。
+    既にそのモードにいるなら、来ない値を待たずに返す。
+    """
+    g = gimbal([(0x06, 0x10)])
+
+    assert g._enter(*link2pro.MODES["deskview"], 15.0, "deskview") == (0x06, 0x10)
+    assert g.xu.writes == []
+    assert sleeps == []
 
 
 def test_mode_timeout_mentions_stream() -> None:
