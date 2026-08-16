@@ -62,6 +62,9 @@ UNITS_PER_DEGREE = 3600
 # 見ながら 1 度ずつ追い込んだ値。設置環境で変わるため --tilt で上書きできる
 DESK_TILT = -53.0
 
+# 追跡へ入る前に正面・水平へ戻すのにかける秒数。同じだけ駆動の完了も待つ
+FACE_FRONT_SECONDS = 1.5
+
 # モード名 -> (モード ID, 書き込む byte[1], 完了とみなす byte[1])
 #
 # byte[1] に 0x00 を書いて入り口の状態にすると、カメラが自分で次の状態へ進む。
@@ -509,6 +512,42 @@ def cmd_center(g: Gimbal, args: argparse.Namespace) -> None:
     _report(g)
 
 
+def _release_mode(g: Gimbal) -> str | None:
+    """有効なモードを解除し、必要なら制御値を実位置へ合わせ直す。
+
+    自律的に動くモードのあとは制御値が実位置とずれており、目的の角度を
+    書いても「現在値と同じ」と見なされて駆動しないことがある。解除した
+    モード名を返す（もともと通常モードなら None）。
+    """
+    current = g.mode
+    if current not in AUTONOMOUS_MODES:
+        return None
+    print(f"{current} を解除します")
+    g.set_mode("normal")
+    g.resync()
+    return current
+
+
+def _face_front(g: Gimbal) -> None:
+    """追跡に入れる状態を作る。
+
+    追跡は人物が画角に入っていないと起動せず、byte[0] が 0xff のまま
+    タイムアウトする（机へ向けた状態で再現。正面へ戻すと 1 秒で入る）。
+    追跡はどのみちカメラを自分で向けるため、先に正面・水平へ戻しても
+    副作用にならない。
+
+    指令を出すだけでは足りず、ジンバルが物理的に向き終わるのを待つ必要が
+    ある。待たずに続けると、まだ机を向いている間に判定が走って失敗する。
+    """
+    if _release_mode(g) is None and g.mode != "normal":
+        # DeskView などが残っていると画も向きも別物になる。素の状態から入る
+        g.set_mode("normal")
+    if (g.pan, g.tilt) == (0.0, 0.0):
+        return  # resync 済み、または既に正面
+    g.glide(0.0, 0.0, FACE_FRONT_SECONDS)
+    time.sleep(FACE_FRONT_SECONDS)
+
+
 def cmd_desk(g: Gimbal, args: argparse.Namespace) -> None:
     """机上を書画カメラとして写す。
 
@@ -518,14 +557,8 @@ def cmd_desk(g: Gimbal, args: argparse.Namespace) -> None:
 
     モードに入るときにジンバルが動くので、チルトは入ったあとに指定する。
     """
-    current = g.mode
-    if current in AUTONOMOUS_MODES:
-        # 追跡が有効なままだと机へ向けても被写体へ向き直される。さらに自律動作の
-        # あとは制御値が実位置とずれており、正面を指す 0 を書いても「現在値と
-        # 同じ」と見なされて駆動しないため、原点を経由して合わせ直す
-        print(f"{current} を解除します")
-        g.set_mode("normal")
-        g.resync()
+    # 追跡が有効なままだと机へ向けても被写体へ向き直される
+    _release_mode(g)
 
     state = g.set_mode("deskview")
     print(f"mode: {g.mode} (byte[0]=0x{state[0]:02x} byte[1]=0x{state[1]:02x})")
@@ -576,6 +609,9 @@ def cmd_mode(g: Gimbal, args: argparse.Namespace) -> None:
         return
     if args.corners and args.name != "whiteboard":
         raise SystemExit("--corners は whiteboard でのみ指定できます")
+
+    if args.name == "tracking":
+        _face_front(g)
 
     if args.corners:
         # 手動指定は通常モードから完全なペイロードを一括で書く。
