@@ -118,9 +118,11 @@ class Gimbal:
 
     def _clamp(self, axis: str, raw: int) -> int:
         lo, hi, step = self.limits[axis]
-        raw = max(lo, min(hi, raw))
-        # step の倍数に丸める。ドライバ側でも丸められるが、返り値を予測可能にする
-        return round(raw / step) * step
+        # V4L2 の有効値は lo + n*step (≤ hi)。lo 基準で丸め、n を範囲内に収める
+        # ことで、範囲端と step が整合しないデバイスでも hi を超えない
+        n = round((raw - lo) / step)
+        n = max(0, min(n, (hi - lo) // step))
+        return lo + n * step
 
     @property
     def pan(self) -> float:
