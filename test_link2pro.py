@@ -138,22 +138,40 @@ def run_cli(argv: list[str], mode: str = "normal", **attrs: object) -> FakeGimba
     return g
 
 
-def test_tracking_faces_front_first() -> None:
+def test_tracking_faces_front_first(sleeps: list[float]) -> None:
     """追跡は人物が画角に入っていないと起動しない（実機で確認）。
 
     机へ向けた状態（tilt -53）では 15 秒待っても入れず、正面・水平へ戻すと
     1 秒で入る。追跡はどのみちカメラを自分で向けるので、先に正面へ戻す。
+
+    指令を出すだけでは足りない。ジンバルが物理的に向き終わる前に追跡へ
+    入ろうとすると、やはり画角に人物が入っておらず失敗する。
     """
     g = run_cli(["mode", "tracking"], mode="normal", pan=40.0, tilt=-53.0)
 
     assert g.calls == [
-        ("set_pan_tilt", 0.0, 0.0),
+        ("glide", 0.0, 0.0, link2pro.FACE_FRONT_SECONDS),
+        ("mode", "tracking"),
+    ]
+    assert sleeps  # 駆動が終わるまで待つ
+
+
+def test_tracking_leaves_any_mode_first() -> None:
+    """追跡は素の状態から入る。DeskView などが残っていると画も向きも別物。"""
+    g = run_cli(["mode", "tracking"], mode="deskview", pan=0.0, tilt=-53.0)
+
+    assert g.calls == [
+        ("mode", "normal"),
+        ("glide", 0.0, 0.0, link2pro.FACE_FRONT_SECONDS),
         ("mode", "tracking"),
     ]
 
 
-def test_tracking_from_another_mode_releases_and_resyncs() -> None:
-    """自律動作していたモードから入るときは制御値も合わせ直す。"""
+def test_tracking_from_autonomous_mode_resyncs() -> None:
+    """自律動作していたモードから入るときは制御値も合わせ直す。
+
+    resync が原点へ戻すため、そのあとに向け直す必要はない。
+    """
     g = run_cli(["mode", "tracking"], mode="overhead")
 
     assert g.calls == [
