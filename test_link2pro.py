@@ -181,7 +181,7 @@ def test_tracking_from_autonomous_mode_resyncs(sleeps: list[float]) -> None:
         ("resync",),
         ("mode", "tracking"),
     ]
-    assert link2pro.FACE_FRONT_SECONDS in sleeps
+    assert sleeps == [link2pro.FACE_FRONT_SECONDS]
 
 
 def test_tracking_already_front_does_not_move() -> None:
