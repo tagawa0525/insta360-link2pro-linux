@@ -75,6 +75,17 @@ def test_stale_failure_flag_does_not_abort() -> None:
     assert enter_whiteboard(g) == (0x04, 0x02)
 
 
+def test_stale_failure_flag_during_transition_does_not_abort() -> None:
+    """byte[1] は次のモードに入るまで前の値が残る。遷移中の 0x03 も残骸。
+
+    失敗直後（カメラが byte[1] を消すまでの約 1 秒）に再実行すると、
+    入り口を書いたあとも 0x03 を読みうる。
+    """
+    g = gimbal([(0x00, 0x03), (0xFF, 0x03), (0x04, 0x00), (0x04, 0x02)])
+
+    assert enter_whiteboard(g) == (0x04, 0x02)
+
+
 def test_mode_timeout_mentions_stream() -> None:
     """モードにすら入れないときはストリームを疑う（従来どおり）。"""
     g = gimbal([(0xFF, 0x00)])
