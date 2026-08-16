@@ -86,6 +86,66 @@ def test_stale_failure_flag_during_transition_does_not_abort() -> None:
     assert enter_whiteboard(g) == (0x04, 0x02)
 
 
+class FakeGimbal:
+    """コマンド関数から呼ばれた操作を順に記録する Gimbal の代役。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+        self.pan = 12.0  # desk はパンを変えない。据え置きを確かめるため 0 以外にする
+        self.tilt = 0.0
+        self.zoom = 1.0
+        self.mode = "deskview"
+
+    def set_mode(self, name: str) -> tuple[int, int]:
+        self.calls.append(("mode", name))
+        return (0x06, 0x11)
+
+    def glide(self, pan: float, tilt: float, duration: float) -> None:
+        self.calls.append(("glide", pan, tilt, duration))
+        self.pan, self.tilt = pan, tilt
+
+    def set_pan_tilt(self, pan: float | None = None, tilt: float | None = None) -> None:
+        self.calls.append(("set_pan_tilt", pan, tilt))
+        self.pan, self.tilt = pan, tilt
+
+    def set_zoom(self, factor: float) -> None:
+        self.calls.append(("zoom", factor))
+
+
+def run_desk(argv: list[str]) -> FakeGimbal:
+    args = link2pro.build_parser().parse_args(argv)
+    g = FakeGimbal()
+    args.func(g, args)
+    return g
+
+
+def test_desk_tilts_after_entering_deskview() -> None:
+    """DeskView は画を 180 度回すだけなので、机へ向けるチルトと組で使う。
+
+    順序が逆だと、モードに入るときの動作でチルトが打ち消される。
+    """
+    g = run_desk(["desk", "-t", "0"])
+
+    assert g.calls == [
+        ("mode", "deskview"),
+        ("set_pan_tilt", 12.0, link2pro.DESK_TILT),
+    ]
+
+
+def test_desk_tilt_can_be_overridden() -> None:
+    """既定角は設置環境（カメラ高さ・机までの距離）依存なので上書きできる。"""
+    g = run_desk(["desk", "--tilt", "-60", "-t", "0"])
+
+    assert g.calls[-1] == ("set_pan_tilt", 12.0, -60.0)
+
+
+def test_desk_glides_by_default() -> None:
+    """既定では移動に時間をかける（急な駆動を避ける）。"""
+    g = run_desk(["desk"])
+
+    assert g.calls[-1] == ("glide", 12.0, link2pro.DESK_TILT, 1.0)
+
+
 def test_mode_timeout_mentions_stream() -> None:
     """モードにすら入れないときはストリームを疑う（従来どおり）。"""
     g = gimbal([(0xFF, 0x00)])
