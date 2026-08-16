@@ -75,6 +75,8 @@ MODES: dict[str, tuple[int, int, int | None]] = {
     "deskview": (0x06, 0x00, 0x11),
 }
 MODE_BY_ID = {v[0]: k for k, v in MODES.items()}
+# ジンバルが自律的に動くモード。この間とその直後は制御値が実位置を反映しない
+AUTONOMOUS_MODES = frozenset({"tracking", "overhead"})
 MODE_TRANSITION = 0xFF  # 遷移中に byte[0] が返す値。この間の書き込みは無視される
 # ホワイトボードの自動検出が失敗したときに byte[1] が返す値。カメラは
 # これを返した約 1 秒後に byte[0] を自分で normal へ戻す
@@ -223,7 +225,10 @@ class Gimbal:
                     "--corners で四隅を指定してください。"
                 )
             if state[0] == mode_id:
-                if settled_flag is None or state[1] == settled_flag:
+                if settled_flag is None or state[1] == settled_flag or not last_write:
+                    # 完了フラグは入った直後だけ返る値で、しばらくすると別の値に
+                    # 落ち着く（deskview は 0x11 → 0x10）。自分で遷移させたので
+                    # なければ、来ない値を待たずにそのまま返す
                     return state
                 # モードには入った。以降はカメラ側の検出を待つだけ。
                 # ここで入り口の値を書き直すと検出がやり直しになる
@@ -514,18 +519,20 @@ def cmd_desk(g: Gimbal, args: argparse.Namespace) -> None:
     モードに入るときにジンバルが動くので、チルトは入ったあとに指定する。
     """
     current = g.mode
-    if current != "normal":
-        # 追跡などが有効なままだと机へ向けても被写体へ向き直される。さらに
-        # 自律動作のあとは制御値が実位置とずれており、正面を指す 0 を書いても
-        # 「現在値と同じ」と見なされて駆動しないため、原点を経由して合わせ直す
+    if current in AUTONOMOUS_MODES:
+        # 追跡が有効なままだと机へ向けても被写体へ向き直される。さらに自律動作の
+        # あとは制御値が実位置とずれており、正面を指す 0 を書いても「現在値と
+        # 同じ」と見なされて駆動しないため、原点を経由して合わせ直す
         print(f"{current} を解除します")
         g.set_mode("normal")
         g.resync()
 
     state = g.set_mode("deskview")
     print(f"mode: {g.mode} (byte[0]=0x{state[0]:02x} byte[1]=0x{state[1]:02x})")
-    args.pan = 0.0  # 机は正面。パンが残っていると机の端しか写らない
-    args.zoom = None
+    # プリセットとして画角を確定させる。パンやズームが残っていると机の端や
+    # その一部しか写らない
+    args.pan = 0.0
+    args.zoom = 1.0
     cmd_moveto(g, args)
 
 
