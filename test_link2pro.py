@@ -30,9 +30,11 @@ class FakeXu:
 
 
 @pytest.fixture(autouse=True)
-def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ポーリング間隔で待たない。"""
-    monkeypatch.setattr(link2pro.time, "sleep", lambda _: None)
+def sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """ポーリング間隔で待たず、待った回数を記録する。"""
+    calls: list[float] = []
+    monkeypatch.setattr(link2pro.time, "sleep", calls.append)
+    return calls
 
 
 def gimbal(states: list[tuple[int, int]]) -> link2pro.Gimbal:
@@ -84,6 +86,132 @@ def test_stale_failure_flag_during_transition_does_not_abort() -> None:
     g = gimbal([(0x00, 0x03), (0xFF, 0x03), (0x04, 0x00), (0x04, 0x02)])
 
     assert enter_whiteboard(g) == (0x04, 0x02)
+
+
+class FakeGimbal:
+    """コマンド関数から呼ばれた操作を順に記録する Gimbal の代役。"""
+
+    def __init__(self, mode: str = "normal") -> None:
+        self.calls: list[tuple] = []
+        # 自律動作のあとを模して、制御値は原点から離れた値にしておく
+        self.pan = 40.0
+        self.tilt = 0.0
+        self.zoom = 1.0
+        self.mode = mode
+
+    def set_mode(self, name: str) -> tuple[int, int]:
+        self.calls.append(("mode", name))
+        self.mode = name
+        return (0x06, 0x11)
+
+    def resync(self) -> None:
+        self.calls.append(("resync",))
+        self.pan, self.tilt = 0.0, 0.0
+
+    def glide(self, pan: float, tilt: float, duration: float) -> None:
+        self.calls.append(("glide", pan, tilt, duration))
+        self.pan, self.tilt = pan, tilt
+
+    def set_pan_tilt(self, pan: float | None = None, tilt: float | None = None) -> None:
+        self.calls.append(("set_pan_tilt", pan, tilt))
+        # 本物と同じく、None はその軸を変更しない
+        if pan is not None:
+            self.pan = pan
+        if tilt is not None:
+            self.tilt = tilt
+
+    def set_zoom(self, factor: float) -> None:
+        self.calls.append(("zoom", factor))
+        self.zoom = factor
+
+
+def run_desk(argv: list[str], mode: str = "normal") -> FakeGimbal:
+    args = link2pro.build_parser().parse_args(argv)
+    g = FakeGimbal(mode)
+    args.func(g, args)
+    return g
+
+
+def test_desk_faces_front() -> None:
+    """机は正面にある。パンが残っていると机の端しか写らない。
+
+    順序も重要で、チルトはモードに入ったあとに指定する（モードに入るときに
+    ジンバルが動くため、先に指定すると打ち消される）。
+    """
+    g = run_desk(["desk", "-t", "0"])
+
+    assert g.calls == [
+        ("mode", "deskview"),
+        ("set_pan_tilt", 0.0, link2pro.DESK_TILT),
+        ("zoom", 1.0),
+    ]
+
+
+def test_desk_tilt_can_be_overridden() -> None:
+    """既定角は設置環境（カメラ高さ・机までの距離）依存なので上書きできる。"""
+    g = run_desk(["desk", "--tilt", "-60", "-t", "0"])
+
+    assert g.calls == [
+        ("mode", "deskview"),
+        ("set_pan_tilt", 0.0, -60.0),
+        ("zoom", 1.0),
+    ]
+
+
+def test_desk_glides_by_default() -> None:
+    """既定では移動に時間をかける（急な駆動を避ける）。"""
+    g = run_desk(["desk"])
+
+    assert g.calls == [
+        ("mode", "deskview"),
+        ("glide", 0.0, link2pro.DESK_TILT, 1.0),
+        ("zoom", 1.0),
+    ]
+
+
+@pytest.mark.parametrize("mode", ["tracking", "overhead"])
+def test_desk_releases_autonomous_modes_and_resyncs(mode: str) -> None:
+    """ジンバルが自律的に動くモードでは、制御値が実位置とずれている。
+
+    追跡は解除しないと机へ向けても被写体へ向き直される。またずれたままだと、
+    正面を指す 0 を書いても「現在値と同じ」と見なされて駆動しない。
+    """
+    g = run_desk(["desk", "-t", "0"], mode=mode)
+
+    assert g.calls == [
+        ("mode", "normal"),
+        ("resync",),
+        ("mode", "deskview"),
+        ("set_pan_tilt", 0.0, link2pro.DESK_TILT),
+        ("zoom", 1.0),
+    ]
+
+
+@pytest.mark.parametrize("mode", ["normal", "deskview", "whiteboard"])
+def test_desk_does_not_resync_without_autonomous_motion(mode: str) -> None:
+    """ジンバルが動いていないモードでは制御値を信用できる。
+
+    resync は 1 秒待って原点を経由するため、desk を続けて実行するたびに
+    走ると無駄な動きになる。
+    """
+    g = run_desk(["desk", "-t", "0"], mode=mode)
+
+    assert ("resync",) not in g.calls
+    assert ("mode", "normal") not in g.calls
+
+
+def test_deskview_does_not_wait_beyond_the_mode_id(sleeps: list[float]) -> None:
+    """DeskView は byte[0] が入れ替わった時点で有効。byte[1] は待たない。
+
+    実機では 0x06,0x10 のあと約 0.2 秒で 0x11 になるが、12 秒観測しても
+    0x10 のままのことがある。来ないかもしれない値を待つと最大 15 秒止まる。
+    """
+    g = gimbal([(0x00, 0x10), (0xFF, 0x10), (0x06, 0x10)])
+
+    assert g._enter(*link2pro.MODES["deskview"], 15.0, "deskview") == (0x06, 0x10)
+    assert g.xu.writes == [{0: 0x06, 1: 0x00}]
+    # 3 回目の読みで返る。0x11 を待つとタイムアウトまで 15 回待つことになる
+    assert len(sleeps) == 2
 
 
 def test_mode_timeout_mentions_stream() -> None:

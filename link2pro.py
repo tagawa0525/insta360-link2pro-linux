@@ -58,6 +58,10 @@ XU_RESET = (11, 5)  # ジンバルリセット（1 バイト、SET 専用）
 DEVICE_NAME = "Insta360 Link 2 Pro"
 UNITS_PER_DEGREE = 3600
 
+# desk サブコマンドが机へ向けるチルト角。モニタ上端に載せた実機で、映像を
+# 見ながら 1 度ずつ追い込んだ値。設置環境で変わるため --tilt で上書きできる
+DESK_TILT = -53.0
+
 # モード名 -> (モード ID, 書き込む byte[1], 完了とみなす byte[1])
 #
 # byte[1] に 0x00 を書いて入り口の状態にすると、カメラが自分で次の状態へ進む。
@@ -68,9 +72,14 @@ MODES: dict[str, tuple[int, int, int | None]] = {
     "tracking": (0x01, 0x00, None),
     "overhead": (0x05, 0x03, None),
     "whiteboard": (0x04, 0x00, 0x02),
-    "deskview": (0x06, 0x00, 0x11),
+    # DeskView の byte[1] は 0x10 の約 0.2 秒後に 0x11 になるが、0x10 のまま
+    # 変わらないこともある（実機で 12 秒観測）。byte[0] が入れ替わった時点で
+    # 有効なので、来ないかもしれない値は待たない
+    "deskview": (0x06, 0x00, None),
 }
 MODE_BY_ID = {v[0]: k for k, v in MODES.items()}
+# ジンバルが自律的に動くモード。この間とその直後は制御値が実位置を反映しない
+AUTONOMOUS_MODES = frozenset({"tracking", "overhead"})
 MODE_TRANSITION = 0xFF  # 遷移中に byte[0] が返す値。この間の書き込みは無視される
 # ホワイトボードの自動検出が失敗したときに byte[1] が返す値。カメラは
 # これを返した約 1 秒後に byte[0] を自分で normal へ戻す
@@ -500,6 +509,33 @@ def cmd_center(g: Gimbal, args: argparse.Namespace) -> None:
     _report(g)
 
 
+def cmd_desk(g: Gimbal, args: argparse.Namespace) -> None:
+    """机上を書画カメラとして写す。
+
+    DeskView は画を 180 度回すだけでカメラは正面を向いたままなので、単体では
+    机が写らない。逆に真下を向けるだけでは画が上下逆になる。「下を向ける」の
+    がチルト、「上下を戻す」のが DeskView という分担のため、両方が要る。
+
+    モードに入るときにジンバルが動くので、チルトは入ったあとに指定する。
+    """
+    current = g.mode
+    if current in AUTONOMOUS_MODES:
+        # 追跡が有効なままだと机へ向けても被写体へ向き直される。さらに自律動作の
+        # あとは制御値が実位置とずれており、正面を指す 0 を書いても「現在値と
+        # 同じ」と見なされて駆動しないため、原点を経由して合わせ直す
+        print(f"{current} を解除します")
+        g.set_mode("normal")
+        g.resync()
+
+    state = g.set_mode("deskview")
+    print(f"mode: {g.mode} (byte[0]=0x{state[0]:02x} byte[1]=0x{state[1]:02x})")
+    # プリセットとして画角を確定させる。パンやズームが残っていると机の端や
+    # その一部しか写らない
+    args.pan = 0.0
+    args.zoom = 1.0
+    cmd_moveto(g, args)
+
+
 def cmd_zoom(g: Gimbal, args: argparse.Namespace) -> None:
     g.set_zoom(args.factor)
     _report(g)
@@ -645,6 +681,18 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("center", help="原点（正面・等倍）へ戻す")
     add_duration(p, 1.0)
     p.set_defaults(func=cmd_center, needs_wake=True)
+
+    p = sub.add_parser("desk", help="机上を書画カメラとして写す（DeskView + チルト）")
+    p.add_argument(
+        "-l",
+        "--tilt",
+        type=float,
+        default=DESK_TILT,
+        help=f"机へ向けるチルト角（度、既定 {DESK_TILT:+.0f}）。"
+        "最適値はカメラの高さと机までの距離で変わる",
+    )
+    add_duration(p, 1.0)
+    p.set_defaults(func=cmd_desk, needs_wake=True)
 
     p = sub.add_parser("zoom", help="ズーム倍率を設定")
     p.add_argument("factor", type=float, help="倍率（1.0 〜 4.0）")

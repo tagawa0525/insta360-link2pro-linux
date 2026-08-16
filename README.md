@@ -7,6 +7,7 @@ Insta360 Link 2 Pro を Linux から制御する CLI。純正アプリ（Windows
 - AI 人物追跡・オーバーヘッド・ホワイトボード・DeskView の各モード切り替え
   （ベンダ独自の UVC Extension Unit をリバースエンジニアリング）
 - ホワイトボード補正の四隅の手動指定と自動検出
+- 書画カメラ（DeskView + チルトを組で指定する `desk`）
 - ジンバルの中央リセット
 
 PTZ 制御本体は Python 標準ライブラリのみで動作する。カメラをスタンバイから
@@ -33,8 +34,10 @@ PTZ 制御本体は Python 標準ライブラリのみで動作する。カメ�
 ./link2pro.py mode whiteboard            # ホワイトボード補正（自動検出）
 ./link2pro.py mode whiteboard \
   --corners 0.12,0.14,0.09,0.62,0.62,0.63,0.63,0.15   # 四隅を手動指定
-./link2pro.py mode deskview              # 机側を映す（180 度回転）
-./link2pro.py mode overhead              # 書画カメラ（真下）
+./link2pro.py desk                       # 机上を書画カメラとして写す
+./link2pro.py desk --tilt -60            # 机へ向ける角度を変える
+./link2pro.py mode deskview              # 画を 180 度回す（向きは変えない）
+./link2pro.py mode overhead              # 真下を向く（画は上下逆のまま）
 ./link2pro.py mode normal                # 解除
 ```
 
@@ -46,6 +49,16 @@ PTZ 制御本体は Python 標準ライブラリのみで動作する。カメ�
 ```bash
 ./link2pro.py --no-wake mode tracking    # 他アプリがカメラを使用中に切り替える
 ```
+
+書画カメラ用途では `desk` を使う。`mode deskview` は画を 180 度回すだけで
+カメラは正面を向いたままなので、単体では机が写らない。逆に `mode overhead`
+は真下を向くが画の向きが逆のままになる。「下を向ける」のがチルト、「上下を
+戻す」のが DeskView という分担で、`desk` はこの 2 手をまとめる。
+
+既定のチルト角 -53 度は、モニタ上端に載せた実機で映像を見ながら決めた値。
+カメラの高さと机までの距離で最適値は変わるため、深すぎると手前の自分の体が
+写り込み、浅すぎると机が画角から外れる。`--tilt` で調整する（チルトの分解能
+は 1 度刻み）。
 
 ホワイトボードの自動検出は、ボードが画角に入っていないと約 14 秒で失敗する
 （カメラ側が検出を打ち切る）。壁や窓では検出されない。うまく検出されない
