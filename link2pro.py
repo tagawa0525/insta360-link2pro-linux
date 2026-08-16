@@ -208,6 +208,25 @@ class Gimbal:
                 )
             time.sleep(1.0)
 
+    def set_whiteboard_region(self, corners: list[tuple[float, float]]) -> None:
+        """ホワイトボード補正の四辺形を明示指定する。
+
+        corners は左上・左下・右下・右上の順で、画面に対する 0〜1 の正規化座標。
+        通常モードから、モード ID・フラグ・座標を含む完全なペイロードを一括で書く。
+        受理されると 1 秒以内に byte[1]=0x02 で即ロックし、自動検出は走らない。
+
+        bytes 34-37 のアスペクト値はカメラ側で検証され、範囲外だとペイロード
+        全体が黙って破棄されて自動検出に落ちる（1.959 で破棄・1.839 は受理を
+        実機で確認）。カメラはどのみち 16/9 に正規化するため、常に 16/9 を書く。
+        """
+        if len(corners) != 4:
+            raise ValueError("四隅は 4 点で指定してください")
+        payload = b"".join(struct.pack("<f", v) for pt in corners for v in pt)
+        payload += struct.pack("<f", 16 / 9)
+        changes = {0: MODES["whiteboard"][0], 1: 0x02, 50: 0xAA}
+        changes.update({2 + i: b for i, b in enumerate(payload)})
+        self.xu.patch(*XU_MODE, changes)
+
     def whiteboard_region(self) -> list[tuple[float, float]] | None:
         """検出済みの四隅を返す。未検出なら None。"""
         raw = self.xu.get(*XU_MODE)
@@ -453,17 +472,47 @@ def cmd_demo(g: Gimbal, args: argparse.Namespace) -> None:
     _report(g)
 
 
+def _parse_corners(text: str) -> list[tuple[float, float]]:
+    nums = [float(v) for v in text.replace(" ", "").split(",")]
+    if len(nums) != 8:
+        raise argparse.ArgumentTypeError(
+            "四隅は x1,y1,x2,y2,x3,y3,x4,y4 の 8 個で指定します"
+        )
+    return [(nums[i], nums[i + 1]) for i in range(0, 8, 2)]
+
+
 def cmd_mode(g: Gimbal, args: argparse.Namespace) -> None:
     if args.name is None:
         cmd_status(g, args)
         return
-    state = g.set_mode(args.name)
+    if args.corners and args.name != "whiteboard":
+        raise SystemExit("--corners は whiteboard でのみ指定できます")
+
+    if args.corners:
+        # 手動指定は通常モードから完全なペイロードを一括で書く。
+        # 受理されれば 1 秒以内に即ロックする
+        g.set_mode("normal")
+        g.set_whiteboard_region(args.corners)
+        time.sleep(2)
+        state = g.mode_state()
+    else:
+        state = g.set_mode(args.name)
     print(f"mode: {g.mode} (byte[0]=0x{state[0]:02x} byte[1]=0x{state[1]:02x})")
 
     if args.name == "whiteboard":
         region = g.whiteboard_region()
         if region:
             print("  四隅 " + " ".join(f"({x:.3f},{y:.3f})" for x, y in region))
+            if args.corners and any(
+                abs(av - ev) > 0.01
+                for actual, expected in zip(region, args.corners)
+                for av, ev in zip(actual, expected)
+            ):
+                print("  警告: 指定と異なる四隅が返りました（自動検出に落ちた可能性）")
+        elif args.corners:
+            print(
+                "  指定した四隅が破棄されました。縦長など不正な形状の可能性があります"
+            )
         else:
             print("  四隅が未検出です。ボードが画角に入っているか確認してください")
     elif args.name == "tracking":
@@ -548,6 +597,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("mode", help="撮影モードを切り替え（省略時は現状を表示）")
     p.add_argument("name", nargs="?", choices=sorted(MODES), help="切り替え先のモード")
+    p.add_argument(
+        "--corners",
+        type=_parse_corners,
+        help="whiteboard の四隅を x1,y1,...,x4,y4 で指定"
+        "（左上・左下・右下・右上、0〜1 の正規化座標、横長のみ）。"
+        "省略時はカメラの自動検出に任せる",
+    )
     p.set_defaults(func=cmd_mode, needs_wake=True)
 
     p = sub.add_parser("reset", help="ジンバルを中央・水平へ物理的に戻す")
