@@ -541,13 +541,18 @@ def _face_front(g: Gimbal) -> None:
 
     指令を出すだけでは足りず、ジンバルが物理的に向き終わるのを待つ必要が
     ある。待たずに続けると、まだ机を向いている間に判定が走って失敗する。
+    glide は duration 分だけ待ちながら細かく目標を送るため、これが待ちを兼ねる。
     """
-    if _release_mode(g) is None and g.mode != "normal":
+    released = _release_mode(g)
+    if released is None and g.mode != "normal":
         # DeskView などが残っていると画も向きも別物になる。素の状態から入る
         g.set_mode("normal")
-    if (g.pan, g.tilt) == (0.0, 0.0):
-        return  # resync 済み、または既に正面
-    g.glide(0.0, 0.0, FACE_FRONT_SECONDS)
+    if (g.pan, g.tilt) != (0.0, 0.0):
+        g.glide(0.0, 0.0, FACE_FRONT_SECONDS)
+    elif released is not None:
+        # resync は原点を指令するが到達は待たない。真下を向いた overhead から
+        # 入ると、戻り切る前に追跡の判定が走ってしまう
+        time.sleep(FACE_FRONT_SECONDS)
 
 
 def cmd_desk(g: Gimbal, args: argparse.Namespace) -> None:
