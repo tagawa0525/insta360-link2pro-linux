@@ -126,10 +126,76 @@ class FakeGimbal:
 
 
 def run_desk(argv: list[str], mode: str = "normal") -> FakeGimbal:
+    return run_cli(argv, mode)
+
+
+def run_cli(argv: list[str], mode: str = "normal", **attrs: object) -> FakeGimbal:
     args = link2pro.build_parser().parse_args(argv)
     g = FakeGimbal(mode)
+    for k, v in attrs.items():
+        setattr(g, k, v)
     args.func(g, args)
     return g
+
+
+def test_tracking_faces_front_first() -> None:
+    """追跡は人物が画角に入っていないと起動しない（実機で確認）。
+
+    机へ向けた状態（tilt -53）では 15 秒待っても入れず、正面・水平へ戻すと
+    1 秒で入る。追跡はどのみちカメラを自分で向けるので、先に正面へ戻す。
+
+    指令を出すだけでは足りない。ジンバルが物理的に向き終わる前に追跡へ
+    入ろうとすると、やはり画角に人物が入っておらず失敗する。glide は
+    duration 分だけ待ちながら目標を送るため、これが待ちを兼ねる。
+    """
+    g = run_cli(["mode", "tracking"], mode="normal", pan=40.0, tilt=-53.0)
+
+    assert g.calls == [
+        ("glide", 0.0, 0.0, link2pro.FACE_FRONT_SECONDS),
+        ("mode", "tracking"),
+    ]
+
+
+def test_tracking_leaves_any_mode_first() -> None:
+    """追跡は素の状態から入る。DeskView などが残っていると画も向きも別物。"""
+    g = run_cli(["mode", "tracking"], mode="deskview", pan=0.0, tilt=-53.0)
+
+    assert g.calls == [
+        ("mode", "normal"),
+        ("glide", 0.0, 0.0, link2pro.FACE_FRONT_SECONDS),
+        ("mode", "tracking"),
+    ]
+
+
+def test_tracking_from_autonomous_mode_resyncs(sleeps: list[float]) -> None:
+    """自律動作していたモードから入るときは制御値も合わせ直す。
+
+    resync が原点を指令するので向け直しは要らないが、指令するだけで到達は
+    待たない。真下を向いた overhead から入ると、戻り切る前に追跡の判定が
+    走ってしまうため、ここでも駆動の完了を待つ。
+    """
+    g = run_cli(["mode", "tracking"], mode="overhead")
+
+    assert g.calls == [
+        ("mode", "normal"),
+        ("resync",),
+        ("mode", "tracking"),
+    ]
+    assert sleeps == [link2pro.FACE_FRONT_SECONDS]
+
+
+def test_tracking_already_front_does_not_move() -> None:
+    """既に正面・水平なら動かさない。無駄な駆動を避ける。"""
+    g = run_cli(["mode", "tracking"], mode="normal", pan=0.0, tilt=0.0)
+
+    assert g.calls == [("mode", "tracking")]
+
+
+def test_other_modes_are_not_recentered() -> None:
+    """正面化は追跡のためだけ。他のモードは向きを変えない。"""
+    g = run_cli(["mode", "overhead"], mode="normal", pan=40.0, tilt=-53.0)
+
+    assert g.calls == [("mode", "overhead")]
 
 
 def test_desk_faces_front() -> None:
