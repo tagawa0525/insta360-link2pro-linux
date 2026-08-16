@@ -114,10 +114,15 @@ class FakeGimbal:
 
     def set_pan_tilt(self, pan: float | None = None, tilt: float | None = None) -> None:
         self.calls.append(("set_pan_tilt", pan, tilt))
-        self.pan, self.tilt = pan, tilt
+        # 本物と同じく、None はその軸を変更しない
+        if pan is not None:
+            self.pan = pan
+        if tilt is not None:
+            self.tilt = tilt
 
     def set_zoom(self, factor: float) -> None:
         self.calls.append(("zoom", factor))
+        self.zoom = factor
 
 
 def run_desk(argv: list[str], mode: str = "normal") -> FakeGimbal:
