@@ -43,6 +43,7 @@ def _iowr(nr: int, size: int) -> int:
 VIDIOC_QUERYCTRL = _iowr(36, 68)
 VIDIOC_G_CTRL = _iowr(27, 8)
 VIDIOC_S_CTRL = _iowr(28, 8)
+VIDIOC_G_FMT = _iowr(4, 208)  # struct v4l2_format は 64-bit で 208 バイト
 
 # UVC Extension Unit (linux/uvcvideo.h)
 # struct uvc_xu_control_query { u8 unit; u8 selector; u8 query; u16 size; u8 *data; }
@@ -133,6 +134,13 @@ class Gimbal:
     def zoom(self) -> float:
         return self._get(V4L2_CID_ZOOM_ABSOLUTE) / 100
 
+    def format_size(self) -> tuple[int, int]:
+        """現在ネゴシエートされているキャプチャ解像度 (width, height) を返す。"""
+        buf = ctypes.create_string_buffer(struct.pack("<I4x", 1), 208)
+        fcntl.ioctl(self.fd, VIDIOC_G_FMT, buf)
+        width, height = struct.unpack_from("<II", buf.raw, 8)
+        return width, height
+
     def range_deg(self, axis: str) -> tuple[float, float]:
         lo, hi, _ = self.limits[axis]
         return lo / UNITS_PER_DEGREE, hi / UNITS_PER_DEGREE
@@ -216,14 +224,16 @@ class Gimbal:
         受理されると 1 秒以内に byte[1]=0x02 で即ロックし、自動検出は走らない。
 
         bytes 34-37 のアスペクト値はカメラ側で検証され、範囲外だとペイロード
-        全体が黙って破棄されて自動検出に落ちる。受理窓は実測で約 1.675〜1.874
-        （16/9 中心の固定窓で、四隅の形状には依存しない）。カメラはどのみち
-        16/9 に正規化するため、常に 16/9 を書く。
+        全体が黙って破棄されて自動検出に落ちる。受理窓は現在ネゴシエート
+        されているビデオフォーマットのアスペクトを中心とした約 ±6% の固定窓で、
+        四隅の形状には依存しない（16:9 と 4:3 の両ストリームで実測）。
+        そのため現在のフォーマットから計算した値を書く。
         """
         if len(corners) != 4:
             raise ValueError("四隅は 4 点で指定してください")
+        width, height = self.format_size()
         payload = b"".join(struct.pack("<f", v) for pt in corners for v in pt)
-        payload += struct.pack("<f", 16 / 9)
+        payload += struct.pack("<f", width / height)
         changes = {0: MODES["whiteboard"][0], 1: 0x02, 50: 0xAA}
         changes.update({2 + i: b for i, b in enumerate(payload)})
         self.xu.patch(*XU_MODE, changes)
@@ -491,10 +501,16 @@ def cmd_mode(g: Gimbal, args: argparse.Namespace) -> None:
 
     if args.corners:
         # 手動指定は通常モードから完全なペイロードを一括で書く。
-        # 受理されれば 1 秒以内に即ロックする
+        # 受理されれば通常 1 秒程度で即ロックするが、カメラ起動直後は
+        # 遷移(0xFF)が長引くことがあるためポーリングで待つ
         g.set_mode("normal")
         g.set_whiteboard_region(args.corners)
-        time.sleep(2)
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            state = g.mode_state()
+            if state == (MODES["whiteboard"][0], 0x02):
+                break
+            time.sleep(0.5)
         state = g.mode_state()
     else:
         state = g.set_mode(args.name)
