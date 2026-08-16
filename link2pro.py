@@ -200,15 +200,19 @@ class Gimbal:
     ) -> tuple[int, int]:
         deadline = time.time() + timeout
         last_write = 0.0
+        entered = False  # 今回の遷移で目的のモードに入ったことを観測したか
         while True:
             state = self.mode_state()
+            entered = entered or state[0] == mode_id
             if (
-                last_write
+                entered
                 and mode_id == MODES["whiteboard"][0]
                 and state[1] == WHITEBOARD_DETECT_FAILED
             ):
                 # 検出失敗はカメラ側の終了状態。ここで入り口を書き直すと
-                # 0xff（遷移中）に戻り、失敗の理由が読み取れなくなる
+                # 0xff（遷移中）に戻り、失敗の理由が読み取れなくなる。
+                # byte[1] は次のモードに入るまで前の値が残るため、モードに
+                # 入ったことを確認するまでは前回の失敗の残骸と区別できない
                 raise WhiteboardNotDetected(
                     f"ホワイトボードを自動検出できませんでした（byte[0]=0x{state[0]:02x}"
                     f" byte[1]=0x{state[1]:02x}）。ボードが画角に入っているか確認するか、"
