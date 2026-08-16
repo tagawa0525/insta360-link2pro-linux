@@ -44,8 +44,33 @@ VIDIOC_QUERYCTRL = _iowr(36, 68)
 VIDIOC_G_CTRL = _iowr(27, 8)
 VIDIOC_S_CTRL = _iowr(28, 8)
 
+# UVC Extension Unit (linux/uvcvideo.h)
+# struct uvc_xu_control_query { u8 unit; u8 selector; u8 query; u16 size; u8 *data; }
+XU_QUERY_FMT = "<BBBxH2xQ"
+UVCIOC_CTRL_QUERY = (_IOC_WRITE_READ << 30) | (16 << 16) | (ord("u") << 8) | 0x21
+UVC_SET_CUR, UVC_GET_CUR, UVC_GET_LEN = 0x01, 0x81, 0x85
+
+# ベンダ独自コントロールの所在。詳細は references/README.md を参照
+XU_MODE = (9, 2)  # モード制御
+XU_RESET = (11, 5)  # ジンバルリセット（1 バイト、SET 専用）
+
 DEVICE_NAME = "Insta360 Link 2 Pro"
 UNITS_PER_DEGREE = 3600
+
+# モード名 -> (モード ID, 書き込む byte[1], 完了とみなす byte[1])
+#
+# byte[1] に 0x00 を書いて入り口の状態にすると、カメラが自分で次の状態へ進む。
+# 原典（Link / Link 2 向け）の最終値を直接書いても機能は動作しないため、
+# ホワイトボードと DeskView は必ず 0x00 を経由する。
+MODES: dict[str, tuple[int, int, int | None]] = {
+    "normal": (0x00, 0x00, None),
+    "tracking": (0x01, 0x00, None),
+    "overhead": (0x05, 0x03, None),
+    "whiteboard": (0x04, 0x00, 0x02),
+    "deskview": (0x06, 0x00, 0x11),
+}
+MODE_BY_ID = {v[0]: k for k, v in MODES.items()}
+MODE_TRANSITION = 0xFF  # 遷移中に byte[0] が返す値。この間の書き込みは無視される
 
 
 class Gimbal:
@@ -54,6 +79,7 @@ class Gimbal:
     def __init__(self, path: str) -> None:
         self.path = path
         self.fd = os.open(path, os.O_RDWR)
+        self.xu = Xu(self.fd)
         self.limits = {
             name: self._query(cid)
             for name, cid in (
@@ -125,6 +151,91 @@ class Gimbal:
     def set_zoom(self, factor: float) -> None:
         self._set(V4L2_CID_ZOOM_ABSOLUTE, self._clamp("zoom", round(factor * 100)))
 
+    # --- ベンダ独自モード ---
+
+    def mode_state(self) -> tuple[int, int]:
+        """現在のモードを (byte[0], byte[1]) で返す。"""
+        raw = self.xu.get(*XU_MODE)
+        return raw[0], raw[1]
+
+    @property
+    def mode(self) -> str:
+        """現在のモード名。遷移中や未知の値は生の値を返す。"""
+        mode_id, _ = self.mode_state()
+        return MODE_BY_ID.get(mode_id, f"0x{mode_id:02x}")
+
+    def set_mode(self, name: str, timeout: float = 15.0) -> tuple[int, int]:
+        """モードを切り替え、遷移が落ち着くまで待つ。
+
+        書き込み直後は byte[0] が 0xFF（遷移中）を返し、その間の書き込みは
+        無視される。目的の値が読めるまでリトライする必要がある。
+        """
+        normal_id = MODES["normal"][0]
+        current = self.mode_state()[0]
+        if name != "normal" and current not in (normal_id, MODES[name][0]):
+            # モード間を直接切り替えると 0xFF のまま固まる。必ず通常を経由する
+            self._enter(*MODES["normal"], timeout, "normal")
+        return self._enter(*MODES[name], timeout, name)
+
+    def _enter(
+        self,
+        mode_id: int,
+        entry_flag: int,
+        settled_flag: int | None,
+        timeout: float,
+        name: str,
+    ) -> tuple[int, int]:
+        deadline = time.time() + timeout
+        last_write = 0.0
+        while True:
+            state = self.mode_state()
+            if state[0] == mode_id:
+                if settled_flag is None or state[1] == settled_flag:
+                    return state
+                # モードには入った。以降はカメラ側の検出を待つだけ。
+                # ここで入り口の値を書き直すと検出がやり直しになる
+            elif time.time() - last_write >= 3.0:
+                # 遷移中(0xFF)の書き込みは無視されるため、間隔を空けて promote し直す
+                self.xu.patch(*XU_MODE, {0: mode_id, 1: entry_flag})
+                last_write = time.time()
+            if time.time() >= deadline:
+                if state[0] == mode_id:
+                    # モードは有効。検出が終わらなかっただけ（ホワイトボード等）
+                    return state
+                raise ModeTimeout(
+                    f"{name} へ切り替わりません（byte[0]=0x{state[0]:02x}"
+                    f" byte[1]=0x{state[1]:02x}）。ストリームが流れているか確認してください。"
+                )
+            time.sleep(1.0)
+
+    def whiteboard_region(self) -> list[tuple[float, float]] | None:
+        """検出済みの四隅を返す。未検出なら None。"""
+        raw = self.xu.get(*XU_MODE)
+        vals = [struct.unpack("<f", raw[2 + 4 * i : 6 + 4 * i])[0] for i in range(8)]
+        if not any(vals):
+            return None
+        return [(vals[i], vals[i + 1]) for i in (0, 2, 4, 6)]
+
+    def reset_gimbal(self) -> None:
+        """ジンバルを中央・水平へ物理的に戻す。
+
+        原典の Unit 9 Selector 14 は Link 2 Pro では効かない。
+        物理位置は pan/tilt の制御値に反映されないため、
+        呼び出し後に制御値と実位置がずれる点に注意。
+        """
+        self.xu.write(*XU_RESET, bytes([0x01]))
+
+    def resync(self) -> None:
+        """制御値を実位置に合わせ直す。
+
+        自律動作のあとは制御値と物理位置がずれる。同じ値を書いても無操作に
+        なって動かないため、いったん別の値を経由して原点へ戻す。
+        """
+        self.set_pan_tilt(1, 1)
+        time.sleep(1)
+        self.set_pan_tilt(0, 0)
+        self.set_zoom(1.0)
+
     def glide(self, pan: float, tilt: float, duration: float, fps: int = 30) -> None:
         """現在位置から (pan, tilt) まで、duration 秒かけて滑らかに動かす。
 
@@ -144,6 +255,51 @@ class Gimbal:
             time.sleep(duration / steps)
 
 
+class ModeTimeout(RuntimeError):
+    """モードが所定時間内に目的の状態へ遷移しなかった。"""
+
+
+class Xu:
+    """UVC Extension Unit へのアクセス。Gimbal と同じ fd を共有する。"""
+
+    def __init__(self, fd: int) -> None:
+        self.fd = fd
+
+    def _query(
+        self, unit: int, sel: int, query: int, size: int, payload: bytes | None = None
+    ):
+        buf = ctypes.create_string_buffer(payload if payload else size)
+        fcntl.ioctl(
+            self.fd,
+            UVCIOC_CTRL_QUERY,
+            struct.pack(XU_QUERY_FMT, unit, sel, query, size, ctypes.addressof(buf)),
+        )
+        return buf.raw[:size]
+
+    def length(self, unit: int, sel: int) -> int:
+        return int.from_bytes(self._query(unit, sel, UVC_GET_LEN, 2), "little")
+
+    def get(self, unit: int, sel: int) -> bytes:
+        return self._query(unit, sel, UVC_GET_CUR, self.length(unit, sel))
+
+    def patch(self, unit: int, sel: int, changes: dict[int, int]) -> bytes:
+        """現在値を読み、指定バイトだけ差し替えて書き戻す。
+
+        バッファ長が機種で異なるうえ、モード以外の設定も同じバッファに同居する。
+        ゼロ埋めして書くと他の設定を壊すため、必ず read-modify-write する。
+        """
+        ln = self.length(unit, sel)
+        data = bytearray(self._query(unit, sel, UVC_GET_CUR, ln))
+        for offset, value in changes.items():
+            data[offset] = value
+        self._query(unit, sel, UVC_SET_CUR, ln, bytes(data))
+        return bytes(data)
+
+    def write(self, unit: int, sel: int, payload: bytes) -> None:
+        """GET 不可のセレクタ向けに生の値を書く。"""
+        self._query(unit, sel, UVC_SET_CUR, len(payload), payload)
+
+
 class Wake:
     """移動中だけダミーのストリームを流し、カメラをスタンバイから起こす。
 
@@ -152,7 +308,9 @@ class Wake:
     ここでは既にシステムにある v4l2-ctl に任せ、PTZ 制御本体は標準ライブラリのみに保つ。
     """
 
-    SETTLE = 1.5  # ストリーム開始からジンバルが駆動可能になるまでの待ち
+    # ストリーム開始からカメラが指令を受け付けるまでの待ち。
+    # 1.5 秒では XU のモード変更が取りこぼされることを実機で確認した
+    SETTLE = 3.0
 
     def __init__(self, device: str, enabled: bool = True) -> None:
         self.device = device
@@ -232,6 +390,17 @@ def cmd_status(g: Gimbal, args: argparse.Namespace) -> None:
         )
     zlo, zhi, _ = g.limits["zoom"]
     print(f"  zoom : {g.zoom:6.2f}x  (範囲 {zlo / 100:.2f}x 〜 {zhi / 100:.2f}x)")
+    mode_id, flag = g.mode_state()
+    print(f"  mode : {g.mode} (byte[0]=0x{mode_id:02x} byte[1]=0x{flag:02x})")
+    if mode_id == MODES["whiteboard"][0]:
+        region = g.whiteboard_region()
+        if region:
+            pts = " ".join(f"({x:.3f},{y:.3f})" for x, y in region)
+            print(f"         四隅 {pts}")
+        else:
+            print("         四隅は未検出")
+    if mode_id == MODES["tracking"][0]:
+        print("  注意 : 追跡中は pan/tilt の値が実位置を反映しません")
 
 
 def cmd_moveto(g: Gimbal, args: argparse.Namespace) -> None:
@@ -282,6 +451,46 @@ def cmd_demo(g: Gimbal, args: argparse.Namespace) -> None:
         print(f"  {label} → pan {pan:+.0f}° / tilt {tilt:+.0f}°")
         g.glide(pan, tilt, args.duration)
     _report(g)
+
+
+def cmd_mode(g: Gimbal, args: argparse.Namespace) -> None:
+    if args.name is None:
+        cmd_status(g, args)
+        return
+    state = g.set_mode(args.name)
+    print(f"mode: {g.mode} (byte[0]=0x{state[0]:02x} byte[1]=0x{state[1]:02x})")
+
+    if args.name == "whiteboard":
+        region = g.whiteboard_region()
+        if region:
+            print("  四隅 " + " ".join(f"({x:.3f},{y:.3f})" for x, y in region))
+        else:
+            print("  四隅が未検出です。ボードが画角に入っているか確認してください")
+    elif args.name == "tracking":
+        print("  追跡中は pan/tilt での位置指定が打ち消されます")
+
+
+def cmd_reset(g: Gimbal, args: argparse.Namespace) -> None:
+    # 追跡などが有効なままだと、リセット直後にカメラが再び被写体へ向いてしまい
+    # リセットが無意味になる。先にモードを解除する
+    current = g.mode
+    if current != "normal":
+        if args.keep_mode:
+            print(f"警告: {current} が有効です。リセットが打ち消される可能性があります")
+        else:
+            print(f"{current} を解除します（維持するには --keep-mode）")
+            g.set_mode("normal")
+
+    g.reset_gimbal()
+    print("ジンバルを中央へリセットしました")
+    time.sleep(5)
+    if args.resync:
+        g.resync()
+        _report(g)
+    else:
+        print(
+            "  制御値は実位置とずれています。合わせるには --resync を指定してください"
+        )
 
 
 def _report(g: Gimbal) -> None:
@@ -337,6 +546,23 @@ def build_parser() -> argparse.ArgumentParser:
     add_duration(p, 1.5)
     p.set_defaults(func=cmd_demo, needs_wake=True)
 
+    p = sub.add_parser("mode", help="撮影モードを切り替え（省略時は現状を表示）")
+    p.add_argument("name", nargs="?", choices=sorted(MODES), help="切り替え先のモード")
+    p.set_defaults(func=cmd_mode, needs_wake=True)
+
+    p = sub.add_parser("reset", help="ジンバルを中央・水平へ物理的に戻す")
+    p.add_argument(
+        "--resync",
+        action="store_true",
+        help="リセット後に pan/tilt/zoom の制御値を実位置へ合わせる",
+    )
+    p.add_argument(
+        "--keep-mode",
+        action="store_true",
+        help="有効なモードを解除せずリセットする（追跡中は打ち消される）",
+    )
+    p.set_defaults(func=cmd_reset, needs_wake=True)
+
     return parser
 
 
@@ -353,6 +579,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(
             f"{path} を開けません。video グループに所属しているか確認してください。"
         )
+    except ModeTimeout as e:
+        raise SystemExit(str(e))
     except KeyboardInterrupt:
         return 130
     return 0
