@@ -513,9 +513,18 @@ def cmd_desk(g: Gimbal, args: argparse.Namespace) -> None:
 
     モードに入るときにジンバルが動くので、チルトは入ったあとに指定する。
     """
+    current = g.mode
+    if current != "normal":
+        # 追跡などが有効なままだと机へ向けても被写体へ向き直される。さらに
+        # 自律動作のあとは制御値が実位置とずれており、正面を指す 0 を書いても
+        # 「現在値と同じ」と見なされて駆動しないため、原点を経由して合わせ直す
+        print(f"{current} を解除します")
+        g.set_mode("normal")
+        g.resync()
+
     state = g.set_mode("deskview")
     print(f"mode: {g.mode} (byte[0]=0x{state[0]:02x} byte[1]=0x{state[1]:02x})")
-    args.pan = None
+    args.pan = 0.0  # 机は正面。パンが残っていると机の端しか写らない
     args.zoom = None
     cmd_moveto(g, args)
 
