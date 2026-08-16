@@ -167,10 +167,12 @@ def test_tracking_leaves_any_mode_first() -> None:
     ]
 
 
-def test_tracking_from_autonomous_mode_resyncs() -> None:
+def test_tracking_from_autonomous_mode_resyncs(sleeps: list[float]) -> None:
     """自律動作していたモードから入るときは制御値も合わせ直す。
 
-    resync が原点へ戻すため、そのあとに向け直す必要はない。
+    resync が原点を指令するので向け直しは要らないが、指令するだけで到達は
+    待たない。真下を向いた overhead から入ると、戻り切る前に追跡の判定が
+    走ってしまうため、ここでも駆動の完了を待つ。
     """
     g = run_cli(["mode", "tracking"], mode="overhead")
 
@@ -179,6 +181,7 @@ def test_tracking_from_autonomous_mode_resyncs() -> None:
         ("resync",),
         ("mode", "tracking"),
     ]
+    assert link2pro.FACE_FRONT_SECONDS in sleeps
 
 
 def test_tracking_already_front_does_not_move() -> None:
