@@ -72,6 +72,9 @@ MODES: dict[str, tuple[int, int, int | None]] = {
 }
 MODE_BY_ID = {v[0]: k for k, v in MODES.items()}
 MODE_TRANSITION = 0xFF  # 遷移中に byte[0] が返す値。この間の書き込みは無視される
+# ホワイトボードの自動検出が失敗したときに byte[1] が返す値。カメラは
+# これを返した約 1 秒後に byte[0] を自分で normal へ戻す
+WHITEBOARD_DETECT_FAILED = 0x03
 
 
 class Gimbal:
@@ -197,8 +200,24 @@ class Gimbal:
     ) -> tuple[int, int]:
         deadline = time.time() + timeout
         last_write = 0.0
+        entered = False  # 今回の遷移で目的のモードに入ったことを観測したか
         while True:
             state = self.mode_state()
+            entered = entered or state[0] == mode_id
+            if (
+                entered
+                and mode_id == MODES["whiteboard"][0]
+                and state[1] == WHITEBOARD_DETECT_FAILED
+            ):
+                # 検出失敗はカメラ側の終了状態。ここで入り口を書き直すと
+                # 0xff（遷移中）に戻り、失敗の理由が読み取れなくなる。
+                # byte[1] は次のモードに入るまで前の値が残るため、モードに
+                # 入ったことを確認するまでは前回の失敗の残骸と区別できない
+                raise WhiteboardNotDetected(
+                    f"ホワイトボードを自動検出できませんでした（byte[0]=0x{state[0]:02x}"
+                    f" byte[1]=0x{state[1]:02x}）。ボードが画角に入っているか確認するか、"
+                    "--corners で四隅を指定してください。"
+                )
             if state[0] == mode_id:
                 if settled_flag is None or state[1] == settled_flag:
                     return state
@@ -289,8 +308,16 @@ class Gimbal:
             time.sleep(duration / steps)
 
 
-class ModeTimeout(RuntimeError):
+class ModeError(RuntimeError):
+    """モードの切り替えに失敗した。"""
+
+
+class ModeTimeout(ModeError):
     """モードが所定時間内に目的の状態へ遷移しなかった。"""
+
+
+class WhiteboardNotDetected(ModeError):
+    """ホワイトボードの自動検出がカメラ側で失敗した。"""
 
 
 class Xu:
@@ -675,7 +702,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(
             f"{path} を開けません。video グループに所属しているか確認してください。"
         )
-    except ModeTimeout as e:
+    except ModeError as e:
         raise SystemExit(str(e))
     except KeyboardInterrupt:
         return 130
