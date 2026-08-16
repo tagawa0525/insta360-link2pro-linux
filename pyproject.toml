@@ -1,0 +1,17 @@
+[project]
+name = "insta360-link2pro"
+version = "0.1.0"
+description = "Insta360 Link 2 Pro のジンバル（パン/チルト/ズーム）を制御する CLI"
+requires-python = ">=3.11"
+# PTZ 制御は V4L2 の ioctl を直接叩くため実行時依存はない
+dependencies = []
+
+[dependency-groups]
+dev = ["ruff==0.16.2"]
+
+[tool.uv]
+# スクリプト単体のプロジェクトのため、ビルド・インストールは行わない
+package = false
+
+[tool.ruff]
+line-length = 88
