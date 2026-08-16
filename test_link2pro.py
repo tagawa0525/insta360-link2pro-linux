@@ -136,6 +136,7 @@ def test_desk_faces_front() -> None:
     assert g.calls == [
         ("mode", "deskview"),
         ("set_pan_tilt", 0.0, link2pro.DESK_TILT),
+        ("zoom", 1.0),
     ]
 
 
@@ -143,37 +144,53 @@ def test_desk_tilt_can_be_overridden() -> None:
     """既定角は設置環境（カメラ高さ・机までの距離）依存なので上書きできる。"""
     g = run_desk(["desk", "--tilt", "-60", "-t", "0"])
 
-    assert g.calls == [("mode", "deskview"), ("set_pan_tilt", 0.0, -60.0)]
+    assert g.calls == [
+        ("mode", "deskview"),
+        ("set_pan_tilt", 0.0, -60.0),
+        ("zoom", 1.0),
+    ]
 
 
 def test_desk_glides_by_default() -> None:
     """既定では移動に時間をかける（急な駆動を避ける）。"""
     g = run_desk(["desk"])
 
-    assert g.calls == [("mode", "deskview"), ("glide", 0.0, link2pro.DESK_TILT, 1.0)]
+    assert g.calls == [
+        ("mode", "deskview"),
+        ("glide", 0.0, link2pro.DESK_TILT, 1.0),
+        ("zoom", 1.0),
+    ]
 
 
-def test_desk_releases_tracking_and_resyncs() -> None:
-    """追跡中はカメラが自律的に動き、制御値が実位置とずれている。
+@pytest.mark.parametrize("mode", ["tracking", "overhead"])
+def test_desk_releases_autonomous_modes_and_resyncs(mode: str) -> None:
+    """ジンバルが自律的に動くモードでは、制御値が実位置とずれている。
 
-    解除しないと机へ向けても被写体へ向き直される。またずれたままだと、
+    追跡は解除しないと机へ向けても被写体へ向き直される。またずれたままだと、
     正面を指す 0 を書いても「現在値と同じ」と見なされて駆動しない。
     """
-    g = run_desk(["desk", "-t", "0"], mode="tracking")
+    g = run_desk(["desk", "-t", "0"], mode=mode)
 
     assert g.calls == [
         ("mode", "normal"),
         ("resync",),
         ("mode", "deskview"),
         ("set_pan_tilt", 0.0, link2pro.DESK_TILT),
+        ("zoom", 1.0),
     ]
 
 
-def test_desk_does_not_resync_when_already_normal() -> None:
-    """通常モードなら制御値は信用できる。無駄に原点を経由しない。"""
-    g = run_desk(["desk", "-t", "0"])
+@pytest.mark.parametrize("mode", ["normal", "deskview", "whiteboard"])
+def test_desk_does_not_resync_without_autonomous_motion(mode: str) -> None:
+    """ジンバルが動いていないモードでは制御値を信用できる。
+
+    resync は 1 秒待って原点を経由するため、desk を続けて実行するたびに
+    走ると無駄な動きになる。
+    """
+    g = run_desk(["desk", "-t", "0"], mode=mode)
 
     assert ("resync",) not in g.calls
+    assert ("mode", "normal") not in g.calls
 
 
 def test_mode_timeout_mentions_stream() -> None:
