@@ -89,16 +89,22 @@ def test_stale_failure_flag_during_transition_does_not_abort() -> None:
 class FakeGimbal:
     """コマンド関数から呼ばれた操作を順に記録する Gimbal の代役。"""
 
-    def __init__(self) -> None:
+    def __init__(self, mode: str = "normal") -> None:
         self.calls: list[tuple] = []
-        self.pan = 12.0  # desk はパンを変えない。据え置きを確かめるため 0 以外にする
+        # 自律動作のあとを模して、制御値は原点から離れた値にしておく
+        self.pan = 40.0
         self.tilt = 0.0
         self.zoom = 1.0
-        self.mode = "deskview"
+        self.mode = mode
 
     def set_mode(self, name: str) -> tuple[int, int]:
         self.calls.append(("mode", name))
+        self.mode = name
         return (0x06, 0x11)
+
+    def resync(self) -> None:
+        self.calls.append(("resync",))
+        self.pan, self.tilt = 0.0, 0.0
 
     def glide(self, pan: float, tilt: float, duration: float) -> None:
         self.calls.append(("glide", pan, tilt, duration))
@@ -112,23 +118,24 @@ class FakeGimbal:
         self.calls.append(("zoom", factor))
 
 
-def run_desk(argv: list[str]) -> FakeGimbal:
+def run_desk(argv: list[str], mode: str = "normal") -> FakeGimbal:
     args = link2pro.build_parser().parse_args(argv)
-    g = FakeGimbal()
+    g = FakeGimbal(mode)
     args.func(g, args)
     return g
 
 
-def test_desk_tilts_after_entering_deskview() -> None:
-    """DeskView は画を 180 度回すだけなので、机へ向けるチルトと組で使う。
+def test_desk_faces_front() -> None:
+    """机は正面にある。パンが残っていると机の端しか写らない。
 
-    順序が逆だと、モードに入るときの動作でチルトが打ち消される。
+    順序も重要で、チルトはモードに入ったあとに指定する（モードに入るときに
+    ジンバルが動くため、先に指定すると打ち消される）。
     """
     g = run_desk(["desk", "-t", "0"])
 
     assert g.calls == [
         ("mode", "deskview"),
-        ("set_pan_tilt", 12.0, link2pro.DESK_TILT),
+        ("set_pan_tilt", 0.0, link2pro.DESK_TILT),
     ]
 
 
@@ -136,14 +143,37 @@ def test_desk_tilt_can_be_overridden() -> None:
     """既定角は設置環境（カメラ高さ・机までの距離）依存なので上書きできる。"""
     g = run_desk(["desk", "--tilt", "-60", "-t", "0"])
 
-    assert g.calls[-1] == ("set_pan_tilt", 12.0, -60.0)
+    assert g.calls[-1] == ("set_pan_tilt", 0.0, -60.0)
 
 
 def test_desk_glides_by_default() -> None:
     """既定では移動に時間をかける（急な駆動を避ける）。"""
     g = run_desk(["desk"])
 
-    assert g.calls[-1] == ("glide", 12.0, link2pro.DESK_TILT, 1.0)
+    assert g.calls[-1] == ("glide", 0.0, link2pro.DESK_TILT, 1.0)
+
+
+def test_desk_releases_tracking_and_resyncs() -> None:
+    """追跡中はカメラが自律的に動き、制御値が実位置とずれている。
+
+    解除しないと机へ向けても被写体へ向き直される。またずれたままだと、
+    正面を指す 0 を書いても「現在値と同じ」と見なされて駆動しない。
+    """
+    g = run_desk(["desk", "-t", "0"], mode="tracking")
+
+    assert g.calls == [
+        ("mode", "normal"),
+        ("resync",),
+        ("mode", "deskview"),
+        ("set_pan_tilt", 0.0, link2pro.DESK_TILT),
+    ]
+
+
+def test_desk_does_not_resync_when_already_normal() -> None:
+    """通常モードなら制御値は信用できる。無駄に原点を経由しない。"""
+    g = run_desk(["desk", "-t", "0"])
+
+    assert ("resync",) not in g.calls
 
 
 def test_mode_timeout_mentions_stream() -> None:
