@@ -233,6 +233,8 @@ class Gimbal:
         """
         if len(corners) != 4:
             raise ValueError("四隅は 4 点で指定してください")
+        if any(not 0.0 <= v <= 1.0 for pt in corners for v in pt):
+            raise ValueError("四隅の座標は 0.0〜1.0 の正規化座標で指定してください")
         width, height = self.format_size()
         payload = b"".join(struct.pack("<f", v) for pt in corners for v in pt)
         payload += struct.pack("<f", width / height)
@@ -500,6 +502,8 @@ def _parse_corners(text: str) -> list[tuple[float, float]]:
         raise argparse.ArgumentTypeError(
             "四隅は x1,y1,x2,y2,x3,y3,x4,y4 の 8 個で指定します"
         )
+    if any(not 0.0 <= v <= 1.0 for v in nums):
+        raise argparse.ArgumentTypeError("座標は 0.0〜1.0 の正規化座標で指定します")
     return [(nums[i], nums[i + 1]) for i in range(0, 8, 2)]
 
 
