@@ -200,18 +200,16 @@ def test_desk_does_not_resync_without_autonomous_motion(mode: str) -> None:
     assert ("mode", "normal") not in g.calls
 
 
-def test_already_active_mode_does_not_wait_for_the_settled_flag(
-    sleeps: list[float],
-) -> None:
-    """完了フラグは入った直後だけの値で、定常状態は別の値に落ち着く。
+def test_deskview_does_not_wait_beyond_the_mode_id(sleeps: list[float]) -> None:
+    """DeskView は byte[0] が入れ替わった時点で有効。byte[1] は待たない。
 
-    deskview は入った直後に byte[1]=0x11 を返すが、しばらくすると 0x10 になる。
-    既にそのモードにいるなら、来ない値を待たずに返す。
+    実機では 0x06,0x10 のあと約 0.2 秒で 0x11 になるが、12 秒観測しても
+    0x10 のままのことがある。来ないかもしれない値を待つと最大 15 秒止まる。
     """
-    g = gimbal([(0x06, 0x10)])
+    g = gimbal([(0x00, 0x10), (0xFF, 0x10), (0x06, 0x10)])
 
-    assert g._enter(*link2pro.MODES["deskview"], 15.0, "deskview") == (0x06, 0x10)
-    assert g.xu.writes == []
+    assert g._enter(*link2pro.MODES["deskview"], 0.5, "deskview") == (0x06, 0x10)
+    assert g.xu.writes == [{0: 0x06, 1: 0x00}]
     assert sleeps == []
 
 
