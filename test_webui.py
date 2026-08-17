@@ -6,6 +6,8 @@ HTTP 層（ソケット・ストリーミング配信）は対象外で、純粋
 
 from __future__ import annotations
 
+import io
+
 import pytest
 
 import link2pro
@@ -105,6 +107,46 @@ def sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     monkeypatch.setattr(link2pro.time, "sleep", calls.append)
     monkeypatch.setattr(webui.time, "sleep", calls.append)
     return calls
+
+
+class TestReadParams:
+    """POST ボディの検証。
+
+    Content-Type を application/json に限定することで、ブラウザの
+    クロスオリジン simple request（text/plain 等）による CSRF 的な
+    カメラ操作を preflight で遮断する。
+    """
+
+    def test_JSONオブジェクトを読む(self) -> None:
+        rfile = io.BytesIO(b'{"pan": 1}')
+        assert webui.read_params("application/json", 10, rfile) == {"pan": 1}
+
+    def test_charset付きのContentTypeも受け付ける(self) -> None:
+        rfile = io.BytesIO(b"{}")
+        assert webui.read_params("application/json; charset=utf-8", 2, rfile) == {}
+
+    def test_JSON以外のContentTypeは拒む(self) -> None:
+        with pytest.raises(ValueError, match="application/json"):
+            webui.read_params("text/plain", 10, io.BytesIO(b'{"pan": 1}'))
+
+    def test_ContentTypeなしは拒む(self) -> None:
+        with pytest.raises(ValueError, match="application/json"):
+            webui.read_params(None, 10, io.BytesIO(b'{"pan": 1}'))
+
+    def test_空ボディは空パラメータとして扱う(self) -> None:
+        assert webui.read_params("application/json", 0, io.BytesIO(b"")) == {}
+
+    def test_巨大ボディは読む前に拒む(self) -> None:
+        class Untouchable:
+            def read(self, n: int) -> bytes:
+                raise AssertionError("上限超過のボディを読んではいけない")
+
+        with pytest.raises(ValueError, match="大きすぎ"):
+            webui.read_params("application/json", webui.MAX_BODY + 1, Untouchable())
+
+    def test_オブジェクト以外のJSONは拒む(self) -> None:
+        with pytest.raises(TypeError):
+            webui.read_params("application/json", 3, io.BytesIO(b"[1]"))
 
 
 class TestHandleApi:
