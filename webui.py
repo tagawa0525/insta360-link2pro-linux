@@ -35,6 +35,9 @@ STREAM_FPS = 30
 HTML_PATH = Path(__file__).with_name("webui.html")
 BOUNDARY = b"link2pro-frame"
 
+# POST ボディの上限。API のパラメータは高々数十バイトで、これを超えるのは不正
+MAX_BODY = 4096
+
 
 class FrameSplitter:
     """連結された JPEG バイト列をフレーム単位に切り出す。
@@ -183,6 +186,25 @@ def _number(params: dict, key: str) -> float | None:
     return value
 
 
+def read_params(content_type: str | None, length: int, rfile) -> dict:
+    """POST ボディを検証してパラメータ辞書として返す。
+
+    Content-Type を application/json に限定する。これはブラウザの
+    クロスオリジン simple request（text/plain 等）にならない条件で、
+    悪意あるページからの CSRF 的なカメラ操作を preflight で遮断する
+    （認証を持たない前提の防御線）。
+    """
+    if length > MAX_BODY:
+        raise ValueError(f"ボディが大きすぎます（上限 {MAX_BODY} バイト）")
+    ctype = (content_type or "").split(";")[0].strip().lower()
+    if ctype != "application/json":
+        raise ValueError("Content-Type は application/json で指定します")
+    params = json.loads(rfile.read(length) or b"{}")
+    if not isinstance(params, dict):
+        raise TypeError("パラメータは JSON オブジェクトで指定します")
+    return params
+
+
 def _status_body(g: Gimbal) -> dict:
     zlo, zhi, _ = g.limits["zoom"]
     return {
@@ -270,11 +292,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length") or 0)
         try:
-            params = json.loads(self.rfile.read(length) or b"{}")
-            if not isinstance(params, dict):
-                raise TypeError
-        except (ValueError, TypeError):
-            self._respond(400, "application/json", b'{"error": "JSON body required"}')
+            params = read_params(self.headers.get("Content-Type"), length, self.rfile)
+        except (ValueError, TypeError) as e:
+            body = {"error": str(e) or "JSON body required"}
+            self._respond(
+                400,
+                "application/json",
+                json.dumps(body, ensure_ascii=False).encode(),
+            )
             return
         self._api(self.path.removeprefix("/api/"), params)
 
