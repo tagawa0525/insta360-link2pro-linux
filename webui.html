@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Insta360 Link 2 Pro</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 1rem; background: #16181c; color: #d8dbe0;
+    font-family: system-ui, sans-serif;
+    display: flex; flex-wrap: wrap; gap: 1rem; justify-content: center;
+  }
+  #preview { max-width: min(960px, 100%); }
+  #preview img {
+    width: 100%; border-radius: 8px; background: #000; aspect-ratio: 16 / 9;
+  }
+  #panel { min-width: 260px; max-width: 400px; flex: 1; }
+  fieldset {
+    border: 1px solid #34383f; border-radius: 8px; margin: 0 0 1rem;
+  }
+  legend { padding: 0 .4rem; color: #9aa0aa; font-size: .85rem; }
+  label { display: block; margin: .5rem 0 .1rem; font-size: .9rem; }
+  input[type=range] { width: 100%; }
+  button {
+    background: #2b3a55; color: inherit; border: 1px solid #3d5077;
+    border-radius: 6px; padding: .45rem .8rem; margin: .15rem;
+    font-size: .9rem; cursor: pointer;
+  }
+  button:hover { background: #395075; }
+  button.on { background: #3f6d3f; border-color: #5b995b; }
+  #message { min-height: 1.4rem; font-size: .85rem; color: #e0b060; }
+  #pose { font-variant-numeric: tabular-nums; color: #9aa0aa; font-size: .85rem; }
+</style>
+</head>
+<body>
+<div id="preview"><img src="/stream.mjpg" alt="カメラ映像"></div>
+<div id="panel">
+  <fieldset>
+    <legend>姿勢</legend>
+    <label>パン <span id="pan-val"></span></label>
+    <input type="range" id="pan" step="1">
+    <label>チルト <span id="tilt-val"></span></label>
+    <input type="range" id="tilt" step="1">
+    <label>ズーム <span id="zoom-val"></span></label>
+    <input type="range" id="zoom" step="0.1">
+    <div>
+      <button data-post="center">正面・等倍</button>
+      <button data-post="reset">ジンバルリセット</button>
+    </div>
+  </fieldset>
+  <fieldset>
+    <legend>モード</legend>
+    <button data-mode="normal">通常</button>
+    <button data-mode="tracking">人物追跡</button>
+    <button data-mode="whiteboard">ホワイトボード</button>
+    <button data-mode="deskview">DeskView</button>
+    <button data-post="desk">書画カメラ</button>
+  </fieldset>
+  <div id="message"></div>
+  <div id="pose"></div>
+</div>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const sliders = { pan: $("pan"), tilt: $("tilt"), zoom: $("zoom") };
+let dragging = null;   // 操作中のスライダーはポーリングで上書きしない
+let busy = false;      // 指令の多重発行を防ぐ（サーバー側も直列化される）
+
+function show(state) {
+  for (const [axis, el] of Object.entries(sliders)) {
+    if (dragging !== axis) el.value = state[axis];
+    const unit = axis === "zoom" ? "x" : "°";
+    $(axis + "-val").textContent = Number(state[axis]).toFixed(1) + unit;
+  }
+  for (const b of document.querySelectorAll("[data-mode]"))
+    b.classList.toggle("on", b.dataset.mode === state.mode);
+  $("pose").textContent =
+    `pan ${state.pan.toFixed(1)}° / tilt ${state.tilt.toFixed(1)}° / ` +
+    `zoom ${state.zoom.toFixed(2)}x / mode ${state.mode}`;
+}
+
+async function post(command, params = {}) {
+  if (busy) return;
+  busy = true;
+  $("message").textContent = "";
+  try {
+    const res = await fetch("/api/" + command, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+    const body = await res.json();
+    if (!res.ok) $("message").textContent = body.error ?? res.statusText;
+    else show(body);
+  } catch (e) {
+    $("message").textContent = "通信エラー: " + e;
+  } finally {
+    busy = false;
+  }
+}
+
+async function init() {
+  const res = await fetch("/api/status");
+  const state = await res.json();
+  for (const [axis, el] of Object.entries(sliders)) {
+    [el.min, el.max] = state.ranges[axis];
+  }
+  show(state);
+}
+
+for (const [axis, el] of Object.entries(sliders)) {
+  el.addEventListener("input", () => {
+    dragging = axis;
+    const unit = axis === "zoom" ? "x" : "°";
+    $(axis + "-val").textContent = Number(el.value).toFixed(1) + unit;
+  });
+  el.addEventListener("change", async () => {
+    const params = axis === "zoom"
+      ? { factor: Number(el.value) }
+      : { [axis]: Number(el.value) };
+    await post(axis === "zoom" ? "zoom" : "moveto", params);
+    dragging = null;
+  });
+}
+
+for (const b of document.querySelectorAll("[data-mode]"))
+  b.addEventListener("click", () => post("mode", { name: b.dataset.mode }));
+for (const b of document.querySelectorAll("[data-post]"))
+  b.addEventListener("click", () => post(b.dataset.post));
+
+init();
+setInterval(async () => {
+  if (busy || dragging) return;
+  try {
+    show(await (await fetch("/api/status")).json());
+  } catch { /* 一時的な断は次回のポーリングに任せる */ }
+}, 3000);
+</script>
+</body>
+</html>
